@@ -1,34 +1,25 @@
 use image::{self, GenericImageView};
-use mp3lame_encoder::{Builder, DualPcm, FlushNoGap, Id3Tag, MonoPcm};
-use puremp3;
-use std::{fs::File, io::Write};
-use wav;
+use minimp3::{Decoder, Error, Frame};
+use mp3lame_encoder::{Builder, FlushNoGap, MonoPcm};
 
 fn to_mp3_buffer(input: &[u16]) -> Vec<u16> {
-    let mut mp3_encoder = Builder::new().expect("Create LAME builder");
-    mp3_encoder.set_num_channels(2).expect("set channels");
+    let mut mp3_encoder = Builder::new().unwrap();
+    mp3_encoder.set_num_channels(1).unwrap();
+    mp3_encoder.set_sample_rate(44_100).unwrap();
     mp3_encoder
-        .set_sample_rate(44_100)
-        .expect("set sample rate");
-    mp3_encoder
-        .set_brate(mp3lame_encoder::Bitrate::Kbps320)
+        .set_brate(mp3lame_encoder::Bitrate::Kbps96)
         .unwrap();
     mp3_encoder
-        .set_quality(mp3lame_encoder::Quality::Best)
+        .set_quality(mp3lame_encoder::Quality::Worst)
         .unwrap();
 
     let mut mp3_encoder = mp3_encoder.build().unwrap();
 
     // let mut buffer: Vec<u8> = vec![0; wave.len()];
-    let input_pcm = DualPcm {
-        left: &input,
-        right: &input,
-    };
+    let input_pcm = MonoPcm(&input);
 
     let mut mp3_out_buffer = Vec::new();
-    mp3_out_buffer.reserve(mp3lame_encoder::max_required_buffer_size(
-        input_pcm.left.len(),
-    ));
+    mp3_out_buffer.reserve(mp3lame_encoder::max_required_buffer_size(input_pcm.0.len()));
     let encoded_size = mp3_encoder
         .encode(input_pcm, mp3_out_buffer.spare_capacity_mut())
         .expect("To encode");
@@ -43,44 +34,40 @@ fn to_mp3_buffer(input: &[u16]) -> Vec<u16> {
         mp3_out_buffer.set_len(mp3_out_buffer.len().wrapping_add(encoded_size));
     }
 
-    let (header, samples) = puremp3::read_mp3(&mp3_out_buffer[..]).unwrap();
-
     let mut out: Vec<u16> = Vec::new();
-    for (left, right) in samples {
-        let input_min = -1.0;
-        let input_max = 1.0;
-        let output_max = std::u16::MAX as f32;
+    let mut decoder = Decoder::new(&mp3_out_buffer[..]);
 
-        // Normalize the input value
-        let normalized_value = (left - input_min) / (input_max - input_min);
-
-        // Scale the normalized value to the output range
-        let scaled_value = normalized_value * (output_max as f32);
-
-        // Convert the scaled value to u16
-        let result = scaled_value.round() as u16;
-        out.push(result);
+    loop {
+        match decoder.next_frame() {
+            Ok(Frame { data, .. }) => {
+                for s in data {
+                    out.push(s as u16);
+                }
+            }
+            Err(Error::Eof) => break,
+            Err(e) => panic!("{:?}", e),
+        }
     }
 
     return out;
 }
 
 fn main() {
-    let img = image::open("in.webp").unwrap();
+    let img = image::open("pattern.jpeg").unwrap();
 
-    let rgb = img.to_rgb16();
+    let rgb = img.to_rgba16();
 
-    let pixels = rgb.enumerate_pixels();
+    let pixels = rgb.pixels();
 
     let mut wave = [Vec::new(), Vec::new(), Vec::new()];
 
-    for (x, y, rgb) in pixels {
-        wave[0].push(rgb.0[0] as u16);
-        wave[1].push(rgb.0[1] as u16);
-        wave[2].push(rgb.0[2] as u16);
+    for p in pixels {
+        wave[0].push(p.0[0]);
+        wave[1].push(p.0[1]);
+        wave[2].push(p.0[2]);
     }
 
-    let buffers: [Vec<u16>; 3] = [
+    let buffers = [
         to_mp3_buffer(&wave[0]),
         to_mp3_buffer(&wave[1]),
         to_mp3_buffer(&wave[2]),
